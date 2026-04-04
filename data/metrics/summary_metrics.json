@@ -1,0 +1,52 @@
+{
+  "run_id": "529eeb66-12c9-4593-ae46-38af83918147",
+  "trained_at": "2026-04-04T08:40:48.299132",
+  "current_model": "ensemble",
+  "selected_model_version": "ensemble-2026-04-04T08:40:47.503402",
+  "promotion_reason": "No incumbent model was registered.",
+  "promoted": true,
+  "business_metrics": {
+    "waste_reduction_pct": 46.2442021564966,
+    "daily_cost_savings_inr": 1214.1666666666667,
+    "annual_savings_inr": 443170.8333333334,
+    "optimized_waste_pct": 3.2085484590050766,
+    "prediction_interval_coverage": 0.66,
+    "before_after_table": [
+      {
+        "metric": "Avg Waste",
+        "before_value": 110.67333333333333,
+        "after_value": 59.49333333333333,
+        "unit": "meals/day"
+      },
+      {
+        "metric": "RMSE",
+        "before_value": 116.106301867441,
+        "after_value": 68.74543635111345,
+        "unit": "meals"
+      },
+      {
+        "metric": "Cost",
+        "before_value": 3873.5666666666666,
+        "after_value": 2659.4,
+        "unit": "INR/day"
+      },
+      {
+        "metric": "Shortage %",
+        "before_value": 0.0,
+        "after_value": 0.5812794055734871,
+        "unit": "%"
+      }
+    ],
+    "coverage_metrics": {
+      "expected_coverage_pct": 90.0,
+      "actual_coverage_pct": 66.0,
+      "calibration_gap_pct": -24.0
+    },
+    "service_level_metrics": {
+      "target_service_level_pct": 95.0,
+      "target_max_shortage_probability_pct": 5.000000000000004,
+      "planned_shortage_probability_pct": 5.000000000000037,
+      "realized_shortage_rate_pct": 0.5812794055734871
+    }
+  }
+}

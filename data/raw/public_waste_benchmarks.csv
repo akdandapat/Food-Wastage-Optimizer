@@ -1,0 +1,4 @@
+segment,plate_waste_pct_mean,plate_waste_pct_std,source_name,source_url
+university_canteen_global,0.12,0.03,FAO Food Waste Index methodological note (institutional catering ranges),https://www.fao.org/3/cb447en/cb447en.pdf
+hospitality_buffet,0.17,0.04,WRAP UK — hospitality food waste overview,https://wrap.org.uk/resources/report/food-waste-prevention-hospitality-and-food-service-sector
+india_institutional_estimate,0.11,0.035,Composite literature band used as prior when no row-level waste data downloads,https://www.fao.org/platform-food-loss-waste
