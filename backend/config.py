@@ -15,7 +15,7 @@ PROCESSED_OPERATIONS_FILE = PROCESSED_DATA_DIR / "kitchen_operations_panel.csv"
 INGESTION_MANIFEST_FILE = LOGS_DIR / "ingestion_manifest.jsonl"
 METRICS_DIR = DATA_DIR / "metrics"
 FIGURES_DIR = DATA_DIR / "figures"
-MODELS_DIR = BASE_DIR / "models"
+MODELS_DIR = DATA_DIR / "models"
 ARTIFACTS_DIR = MODELS_DIR / "artifacts"
 CHECKPOINTS_DIR = MODELS_DIR / "checkpoints"
 
