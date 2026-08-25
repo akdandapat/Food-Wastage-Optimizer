@@ -30,7 +30,7 @@ def _empty_figure(title: str, output_key: str) -> str:
 def generate_plots(
     forecast_history: pd.DataFrame,
     model_comparison: pd.DataFrame,
-    business_metrics: dict,
+    business_metrics: dict | None = None,
     feature_importance: pd.DataFrame | None = None,
 ) -> dict[str, str]:
     FIGURES_DIR.mkdir(parents=True, exist_ok=True)
@@ -67,7 +67,7 @@ def generate_plots(
             color="#d39c3d",
             label="Prediction interval",
         )
-        plt.title("Kitchen Network Demand vs Forecast")
+        plt.title("Hostel Demand vs Forecast")
         plt.xlabel("Date")
         plt.ylabel("Meals")
         plt.legend()
@@ -125,7 +125,7 @@ def generate_plots(
         plt.plot(daily["date"], rolling_savings, linewidth=2.4, color="#204d45")
         plt.axhline(0.0, linestyle="--", color="#666666")
         plt.title(
-            f"Rolling Cost Savings | Annualized INR {business_metrics.get('annual_savings_inr', 0.0):,.0f}"
+            "Rolling 14-Day Average Cost Savings (INR)"
         )
         plt.xlabel("Date")
         plt.ylabel("INR")
@@ -136,7 +136,7 @@ def generate_plots(
         generated["cost_savings"] = str(path)
     else:
         for key, title in (
-            ("demand_vs_actual", "Kitchen Network Demand vs Forecast"),
+            ("demand_vs_actual", "Hostel Demand vs Forecast"),
             ("residual_analysis", "Residual Analysis"),
             ("waste_comparison", "Waste and Shortage Comparison"),
             ("cost_savings", "Cost Savings"),

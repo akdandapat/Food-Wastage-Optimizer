@@ -1,52 +1,77 @@
 {
-  "run_id": "529eeb66-12c9-4593-ae46-38af83918147",
-  "trained_at": "2026-04-04T08:40:48.299132",
+  "run_id": "00cccab6-70a6-4022-bb8b-ed77293476bd",
+  "trained_at": "2026-08-25T11:53:06.286701",
   "current_model": "ensemble",
-  "selected_model_version": "ensemble-2026-04-04T08:40:47.503402",
-  "promotion_reason": "No incumbent model was registered.",
-  "promoted": true,
+  "selected_model_version": "ensemble-2026-08-25T10:43:22.843336",
+  "promotion_reason": "Incumbent retained because improvement threshold was not met.",
+  "promoted": false,
   "business_metrics": {
-    "waste_reduction_pct": 46.2442021564966,
-    "daily_cost_savings_inr": 1214.1666666666667,
-    "annual_savings_inr": 443170.8333333334,
-    "optimized_waste_pct": 3.2085484590050766,
-    "prediction_interval_coverage": 0.66,
+    "waste_reduction_pct": -11.645379413974455,
+    "daily_cost_savings_inr": 300.2046783625731,
+    "optimized_waste_pct": 6.891114820997959,
+    "prediction_interval_coverage": 0.45614035087719296,
     "before_after_table": [
       {
         "metric": "Avg Waste",
-        "before_value": 110.67333333333333,
-        "after_value": 59.49333333333333,
+        "before_value": 7.783625730994152,
+        "after_value": 8.690058479532164,
         "unit": "meals/day"
       },
       {
         "metric": "RMSE",
-        "before_value": 116.106301867441,
-        "after_value": 68.74543635111345,
+        "before_value": 23.837657563792945,
+        "after_value": 15.557460010176472,
         "unit": "meals"
       },
       {
         "metric": "Cost",
-        "before_value": 3873.5666666666666,
-        "after_value": 2659.4,
+        "before_value": 824.0350877192982,
+        "after_value": 523.8304093567251,
         "unit": "INR/day"
       },
       {
         "metric": "Shortage %",
-        "before_value": 0.0,
-        "after_value": 0.5812794055734871,
+        "before_value": 8.26068108472617,
+        "after_value": 3.2898222628967777,
         "unit": "%"
       }
     ],
     "coverage_metrics": {
       "expected_coverage_pct": 90.0,
-      "actual_coverage_pct": 66.0,
-      "calibration_gap_pct": -24.0
+      "actual_coverage_pct": 45.614035087719294,
+      "calibration_gap_pct": -44.385964912280706
     },
     "service_level_metrics": {
       "target_service_level_pct": 95.0,
       "target_max_shortage_probability_pct": 5.000000000000004,
-      "planned_shortage_probability_pct": 5.000000000000037,
-      "realized_shortage_rate_pct": 0.5812794055734871
-    }
+      "planned_shortage_probability_pct": 4.99999999999999,
+      "realized_shortage_rate_pct": 3.2898222628967777
+    },
+    "per_series_metrics": [
+      {
+        "kitchen_id": "JU_BOYS",
+        "n": 57,
+        "mean_demand": 184.8,
+        "wape": 0.1,
+        "mase": 0.6825,
+        "poisson_noise_floor": 0.0736
+      },
+      {
+        "kitchen_id": "JU_GIRLS",
+        "n": 57,
+        "mean_demand": 45.0,
+        "wape": 0.1371,
+        "mase": 0.6766,
+        "poisson_noise_floor": 0.1491
+      },
+      {
+        "kitchen_id": "JU_MAIN",
+        "n": 57,
+        "mean_demand": 134.4,
+        "wape": 0.0852,
+        "mase": 0.5969,
+        "poisson_noise_floor": 0.0863
+      }
+    ]
   }
 }
