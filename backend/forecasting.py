@@ -14,6 +14,8 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import Ridge
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
+import logging
+
 from backend.calibration import build_interval_calibration_payload
 from backend.calendar_utils import annotate_calendar, default_menu_for_date
 from backend.config import (
@@ -21,6 +23,7 @@ from backend.config import (
     FIGURES_DIR,
     PLOT_FILENAMES,
     PROCESSED_OPERATIONS_FILE,
+    SQLITE_DB_FILE,
     ForecastConfig,
 )
 from backend.database import SQLiteRepository, initialize_database
@@ -38,6 +41,8 @@ from backend.storage import (
     save_training_artifacts,
 )
 from backend.visualization import generate_plots
+
+logger = logging.getLogger(__name__)
 
 try:
     import lightgbm as lgb
@@ -83,6 +88,8 @@ class CandidateResult:
     interval_coverage: float
     residual_std: float
     mean_prediction_jump: float
+    wape: float = 0.0
+    mase: float = 0.0
     notes: str = ""
     selected_model: bool = False
     promoted: bool = False
@@ -118,16 +125,66 @@ class KitchenForecastSystem:
 
     def ensure_seed_data(self) -> None:
         """
-        Prefer merged public-ingestion panel (weather + holidays + demand base),
-        then fall back to synthetic operations aligned to cached weather if present.
+        Populate the observation store.
+
+        When ``data_source_mode`` is ``"simulator"`` (the default), any stale
+        processed CSV and SQLite rows are wiped so the synthetic generator
+        always governs the panel.  Real weather from
+        ``data/raw/kolkata_weather_daily.csv`` is overlaid when present.
+
+        When ``data_source_mode`` is ``"ingested"``, the original fallback
+        chain is preserved: processed CSV → full ingestion → synthetic.
         """
+        from backend.config import DEFAULT_KITCHENS, RAW_DATA_DIR
+        from backend.data_generation import generate_synthetic_operations
+
+        if self.config.data_source_mode == "simulator":
+            # --- Only wipe the processed CSV (always stale in simulator) ----
+            if PROCESSED_OPERATIONS_FILE.exists():
+                PROCESSED_OPERATIONS_FILE.unlink()
+
+            # --- Check whether existing observations match current config ---
+            existing_kitchens = self.repository.list_kitchen_ids()
+            expected_kitchens = {k["kitchen_id"] for k in DEFAULT_KITCHENS}
+            existing_span = self.repository.observation_date_span()
+
+            needs_regen = (
+                self.repository.observation_count() == 0
+                or existing_kitchens != expected_kitchens
+                or existing_span is None
+            )
+            if not needs_regen and existing_span is not None:
+                from datetime import date as date_type
+                min_d = date_type.fromisoformat(existing_span[0])
+                max_d = date_type.fromisoformat(existing_span[1])
+                span_days = (max_d - min_d).days
+                needs_regen = span_days < self.config.synthetic_period_days - 7
+
+            if needs_regen:
+                # Wipe only observations — preserve model_registry,
+                # predictions, optimization_decisions, and training_runs.
+                self.repository.truncate_observations()
+                kitchens = self.repository.list_kitchens()
+                weather_csv = self._load_weather_override(RAW_DATA_DIR)
+                synthetic = generate_synthetic_operations(
+                    kitchens, self.config, weather_override=weather_csv
+                )
+                self.repository.upsert_observations(synthetic)
+                logger.info("Data source mode: SIMULATOR — panel regenerated (config mismatch).")
+            else:
+                logger.info("Data source mode: SIMULATOR — existing panel matches config, skipping regeneration.")
+            return
+
+        # --- "ingested" mode: original fallback chain ---------------------
         if self.repository.observation_count() > 0:
+            logger.info("Data source mode: INGESTED — using existing observations in DB.")
             return
 
         if PROCESSED_OPERATIONS_FILE.exists():
             panel = pd.read_csv(PROCESSED_OPERATIONS_FILE, parse_dates=["date"])
             self.repository.upsert_observations(panel)
             if self.repository.observation_count() > 0:
+                logger.info("Data source mode: INGESTED — loaded from processed CSV.")
                 return
 
         try:
@@ -138,32 +195,85 @@ class KitchenForecastSystem:
                 panel = pd.read_csv(PROCESSED_OPERATIONS_FILE, parse_dates=["date"])
                 self.repository.upsert_observations(panel)
                 if self.repository.observation_count() > 0:
+                    logger.info("Data source mode: INGESTED — loaded via run_full_ingestion.")
                     return
         except Exception:
             pass
 
         kitchens = self.repository.list_kitchens()
-        from backend.config import RAW_DATA_DIR
-        from backend.data_generation import generate_synthetic_operations
-
-        weather_csv = None
-        weather_file = RAW_DATA_DIR / "kolkata_weather_daily.csv"
-        if weather_file.exists():
-            try:
-                weather_csv = pd.read_csv(weather_file, parse_dates=["date"])
-            except Exception:
-                weather_csv = None
-
+        weather_csv = self._load_weather_override(RAW_DATA_DIR)
         synthetic = generate_synthetic_operations(
             kitchens, self.config, weather_override=weather_csv
         )
         self.repository.upsert_observations(synthetic)
+        logger.info("Data source mode: INGESTED (fallback) — panel generated by generate_synthetic_operations.")
+
+    @staticmethod
+    def _load_weather_override(raw_data_dir) -> pd.DataFrame | None:
+        """Load real Kolkata weather CSV if it exists."""
+        weather_file = raw_data_dir / "kolkata_weather_daily.csv"
+        if weather_file.exists():
+            try:
+                return pd.read_csv(weather_file, parse_dates=["date"])
+            except Exception:
+                return None
+        return None
 
     def _metric_payload(self, actual: np.ndarray, predicted: np.ndarray) -> tuple[float, float]:
         return (
             float(sqrt(mean_squared_error(actual, predicted))),
             float(mean_absolute_error(actual, predicted)),
         )
+
+    @staticmethod
+    def _wape(actual: np.ndarray, predicted: np.ndarray) -> float:
+        """Weighted Absolute Percentage Error: sum(|actual-pred|) / sum(actual)."""
+        total_actual = float(np.sum(actual))
+        if total_actual < 1e-6:
+            return 0.0
+        return float(np.sum(np.abs(actual - predicted)) / total_actual)
+
+    @staticmethod
+    def _mase(actual: np.ndarray, predicted: np.ndarray, seasonal_period: int = 7) -> float:
+        """Mean Absolute Scaled Error with seasonal-naive (lag-7) denominator.
+
+        MASE < 1 means the model beats the seasonal naive baseline.
+        """
+        mae_model = float(np.mean(np.abs(actual - predicted)))
+        if len(actual) <= seasonal_period:
+            return 0.0
+        naive_errors = np.abs(actual[seasonal_period:] - actual[:-seasonal_period])
+        mae_naive = float(np.mean(naive_errors))
+        if mae_naive < 1e-6:
+            return 0.0
+        return mae_model / mae_naive
+
+    def _per_series_metrics(
+        self, evaluation_frame: pd.DataFrame
+    ) -> list[dict[str, Any]]:
+        """Compute per-kitchen-series metrics for honest evaluation.
+
+        For each kitchen_id reports: n, mean demand, WAPE, MASE,
+        and the Poisson noise floor (sqrt(mean)/mean) — the best any
+        model could hope for on pure count data.
+        """
+        if evaluation_frame.empty:
+            return []
+        metrics: list[dict[str, Any]] = []
+        for kid, group in evaluation_frame.groupby("kitchen_id"):
+            actual = group["actual_demand"].to_numpy(dtype=float)
+            predicted = group["predicted_demand"].to_numpy(dtype=float)
+            mean_demand = float(np.mean(actual))
+            poisson_floor = float(sqrt(mean_demand) / mean_demand) if mean_demand > 0 else 0.0
+            metrics.append({
+                "kitchen_id": str(kid),
+                "n": len(actual),
+                "mean_demand": round(mean_demand, 1),
+                "wape": round(self._wape(actual, predicted), 4),
+                "mase": round(self._mase(actual, predicted), 4),
+                "poisson_noise_floor": round(poisson_floor, 4),
+            })
+        return metrics
 
     def _date_folds(
         self, frame: pd.DataFrame, validation_days: int = 14
@@ -509,7 +619,7 @@ class KitchenForecastSystem:
                 weekly_eval["weekly_actual"].to_numpy(),
                 weekly_eval["weekly_predicted"].to_numpy(),
             )
-        evaluation = self._attach_operational_metrics(evaluation)
+        evaluation = self._attach_operational_metrics(evaluation, full_observations)
 
         result = CandidateResult(
             model_name=model_name,
@@ -521,6 +631,14 @@ class KitchenForecastSystem:
             interval_coverage=interval_coverage,
             residual_std=residual_std,
             mean_prediction_jump=float(jump),
+            wape=self._wape(
+                evaluation["actual_demand"].to_numpy(),
+                evaluation["predicted_demand"].to_numpy(),
+            ),
+            mase=self._mase(
+                evaluation["actual_demand"].to_numpy(),
+                evaluation["predicted_demand"].to_numpy(),
+            ),
         )
         return result, evaluation, weekly_eval
 
@@ -575,8 +693,8 @@ class KitchenForecastSystem:
             "max_encoder_length": self.config.max_encoder_length,
             "min_encoder_length": self.config.max_encoder_length // 2,
             "max_prediction_length": self.config.max_prediction_length,
-            "static_categoricals": ["kitchen_id", "campus_zone", "capacity_band", "default_attendance_band"],
-            "static_reals": ["capacity", "latitude", "longitude"],
+            "static_categoricals": ["kitchen_id"],
+            "static_reals": ["capacity"],
             "time_varying_known_categoricals": ["day_of_week", "season", "menu_type", "event_name"],
             "time_varying_known_reals": [
                 "time_idx",
@@ -588,7 +706,6 @@ class KitchenForecastSystem:
                 "is_holiday",
                 "is_exam_week",
                 "is_event_day",
-                "attendance_variation",
             ],
             "time_varying_unknown_reals": ["target", "waste_quantity"],
             "target_normalizer": GroupNormalizer(groups=["kitchen_id"], transformation="softplus"),
@@ -862,8 +979,16 @@ class KitchenForecastSystem:
             interval_coverage=interval_coverage,
             residual_std=residual_std,
             mean_prediction_jump=float(jump),
+            wape=self._wape(
+                next_day_eval["actual_demand"].to_numpy(),
+                next_day_eval["predicted_demand"].to_numpy(),
+            ),
+            mase=self._mase(
+                next_day_eval["actual_demand"].to_numpy(),
+                next_day_eval["predicted_demand"].to_numpy(),
+            ),
         )
-        return result, self._attach_operational_metrics(evaluation)
+        return result, self._attach_operational_metrics(evaluation, full_observations)
 
     def _select_winner(self, results: list[CandidateResult]) -> CandidateResult:
         ranked = sorted(results, key=lambda item: item.rmse)
@@ -906,7 +1031,7 @@ class KitchenForecastSystem:
         baseline_result = next(result for result in results if result.model_name == "random_forest")
         active_result = next(result for result in results if result.model_name == active_model)
         waste_delta = 0.0
-        daily_savings = max((baseline_result.rmse - active_result.rmse) * self.config.waste_cost, 0.0)
+        daily_savings = None  # unknown until evaluation frame provides real data
         optimized_waste_pct = 0.0
         interval_coverage = active_result.interval_coverage
         before_after_table = self._build_before_after_table(evaluation_frame)
@@ -931,13 +1056,13 @@ class KitchenForecastSystem:
             "promoted": promoted,
             "business_metrics": {
                 "waste_reduction_pct": float(waste_delta),
-                "daily_cost_savings_inr": float(daily_savings),
-                "annual_savings_inr": float(daily_savings * 365),
+                "daily_cost_savings_inr": float(daily_savings) if daily_savings is not None else None,
                 "optimized_waste_pct": float(optimized_waste_pct),
                 "prediction_interval_coverage": float(interval_coverage),
                 "before_after_table": before_after_table,
                 "coverage_metrics": coverage_metrics,
                 "service_level_metrics": service_level_metrics,
+                "per_series_metrics": self._per_series_metrics(evaluation_frame),
             },
         }
 
@@ -1019,17 +1144,64 @@ class KitchenForecastSystem:
             ),
         }
 
-    def _attach_operational_metrics(self, evaluation: pd.DataFrame) -> pd.DataFrame:
+    def _attach_operational_metrics(
+        self,
+        evaluation: pd.DataFrame,
+        history_frame: pd.DataFrame | None = None,
+    ) -> pd.DataFrame:
         if evaluation.empty:
             return evaluation
 
         enriched = evaluation.copy()
+        enriched["date"] = pd.to_datetime(enriched["date"]).dt.normalize()
+        enriched = enriched.sort_values(["kitchen_id", "date"]).reset_index(drop=True)
+
+        if history_frame is not None and not history_frame.empty:
+            hist = history_frame[["kitchen_id", "date", "actual_demand"]].copy()
+            hist["date"] = pd.to_datetime(hist["date"]).dt.normalize()
+            combined = pd.concat(
+                [hist, enriched[["kitchen_id", "date", "actual_demand"]]],
+                ignore_index=True,
+            )
+            combined = (
+                combined.drop_duplicates(subset=["kitchen_id", "date"])
+                .sort_values(["kitchen_id", "date"])
+                .reset_index(drop=True)
+            )
+            combined["lag_7_actual"] = combined.groupby("kitchen_id")["actual_demand"].shift(7)
+            baseline_map = combined.set_index(["kitchen_id", "date"])["lag_7_actual"].to_dict()
+
+            baseline_naive: list[float] = []
+            for row in enriched.itertuples(index=False):
+                lag_val = baseline_map.get((row.kitchen_id, row.date))
+                if pd.notna(lag_val):
+                    baseline_naive.append(float(lag_val))
+                else:
+                    k_hist = hist[hist["kitchen_id"] == row.kitchen_id]["actual_demand"]
+                    fallback = float(k_hist.mean()) if not k_hist.empty else float(row.actual_demand)
+                    baseline_naive.append(fallback)
+        else:
+            baseline_naive = []
+            for _kid, group in enriched.groupby("kitchen_id", sort=False):
+                actuals = group["actual_demand"].to_numpy(dtype=float)
+                naive = np.full(len(actuals), np.nan)
+                for i in range(len(actuals)):
+                    if i >= 7:
+                        naive[i] = actuals[i - 7]
+                    elif i > 0:
+                        naive[i] = float(np.mean(actuals[:i]))
+                    else:
+                        naive[i] = float(np.mean(actuals[1:8])) if len(actuals) > 1 else float(actuals[0])
+                baseline_naive.extend(naive.tolist())
+
+        enriched["baseline_quantity"] = np.ceil(np.array(baseline_naive)).astype(int)
+
         optimized_records: list[dict[str, float]] = []
         baseline_records: list[dict[str, float]] = []
         for row in enriched.itertuples(index=False):
             sigma = float(max(getattr(row, "sigma", self.config.minimum_sigma), self.config.minimum_sigma))
             recommendation = self.optimizer.recommend(float(row.predicted_demand), sigma)
-            baseline_quantity = float(self._heuristic_quantity(float(row.predicted_demand)))
+            baseline_quantity = float(row.baseline_quantity)
             baseline_expected = self.optimizer.evaluate_quantity(
                 float(row.predicted_demand),
                 sigma,
@@ -1060,7 +1232,6 @@ class KitchenForecastSystem:
             )
             baseline_records.append(
                 {
-                    "baseline_quantity": baseline_quantity,
                     "baseline_expected_waste": baseline_expected.expected_waste,
                     "baseline_expected_shortage": baseline_expected.expected_shortage,
                     "baseline_expected_cost_inr": baseline_expected.expected_cost_inr,
@@ -1178,7 +1349,7 @@ class KitchenForecastSystem:
                 return "weather"
             if feature_name in {"is_holiday", "is_exam_week", "is_event_day", "event_name"}:
                 return "academic_and_event_flags"
-            if feature_name.startswith("kitchen_id") or feature_name.startswith("campus_zone") or feature_name.startswith("capacity"):
+            if feature_name.startswith("kitchen_id") or feature_name.startswith("capacity"):
                 return "kitchen_profile"
             return "other"
 
@@ -1201,7 +1372,13 @@ class KitchenForecastSystem:
             for row in grouped.itertuples(index=False)
         ]
 
-    def _heuristic_quantity(self, predicted_demand: float) -> int:
+    def _fixed_buffer_quantity(self, predicted_demand: float) -> int:
+        """Fixed +12% buffer on predicted demand.
+
+        Used as a non-model comparison strategy in ``predict()`` and
+        counterfactual scenarios.  NOT used as the training-time baseline
+        (that is seasonal-naive lag-7 in ``_attach_operational_metrics``).
+        """
         return int(np.ceil(max(predicted_demand * 1.12, 0.0)))
 
     def _decision_strategy_payload(
@@ -1239,7 +1416,7 @@ class KitchenForecastSystem:
             heuristic = self.optimizer.evaluate_quantity(
                 scenario_mu,
                 scenario_sigma,
-                self._heuristic_quantity(scenario_mu),
+                self._fixed_buffer_quantity(scenario_mu),
             )
             payloads.append(
                 {
@@ -1308,7 +1485,7 @@ class KitchenForecastSystem:
             evaluation_frame["upper_bound"] = (
                 evaluation_frame["predicted_demand"] + self.z_interval * residual_std
             )
-            evaluation_frame = self._attach_operational_metrics(evaluation_frame)
+            evaluation_frame = self._attach_operational_metrics(evaluation_frame, training_frame)
             rmse, mae = self._metric_payload(
                 evaluation_frame["actual_demand"].to_numpy(),
                 evaluation_frame["predicted_demand"].to_numpy(),
@@ -1330,6 +1507,14 @@ class KitchenForecastSystem:
                     residual_std=residual_std,
                     mean_prediction_jump=float(
                         evaluation_frame["predicted_demand"].diff().abs().fillna(0.0).mean()
+                    ),
+                    wape=self._wape(
+                        evaluation_frame["actual_demand"].to_numpy(),
+                        evaluation_frame["predicted_demand"].to_numpy(),
+                    ),
+                    mase=self._mase(
+                        evaluation_frame["actual_demand"].to_numpy(),
+                        evaluation_frame["predicted_demand"].to_numpy(),
                     ),
                     notes="Low-data fallback path.",
                     selected_model=True,
@@ -1361,7 +1546,6 @@ class KitchenForecastSystem:
                         "rmse": rmse,
                         "mae": mae,
                         "waste_reduction_pct": summary["business_metrics"]["waste_reduction_pct"],
-                        "annual_savings_inr": summary["business_metrics"]["annual_savings_inr"],
                     }
                 ]
             )
@@ -1399,6 +1583,8 @@ class KitchenForecastSystem:
             }
 
         preholdout_frame, holdout_start = self._split_holdout(training_frame)
+        holdout_end = training_frame["date"].max()
+        logger.info(f"Holdout evaluation range: {holdout_start.strftime('%Y-%m-%d')} to {holdout_end.strftime('%Y-%m-%d')}")
         candidate_results: list[CandidateResult] = []
         tabular_artifacts: dict[str, dict[str, Any]] = {}
         holdout_frames: dict[str, pd.DataFrame] = {}
@@ -1505,9 +1691,17 @@ class KitchenForecastSystem:
                     interval_coverage=interval_coverage,
                     residual_std=float(max(ensemble_eval["sigma"].mean(), self.config.minimum_sigma)),
                     mean_prediction_jump=float(jump),
+                    wape=self._wape(
+                        ensemble_eval["actual_demand"].to_numpy(),
+                        ensemble_eval["predicted_demand"].to_numpy(),
+                    ),
+                    mase=self._mase(
+                        ensemble_eval["actual_demand"].to_numpy(),
+                        ensemble_eval["predicted_demand"].to_numpy(),
+                    ),
                 )
             )
-            holdout_frames["ensemble"] = self._attach_operational_metrics(ensemble_eval)
+            holdout_frames["ensemble"] = self._attach_operational_metrics(ensemble_eval, observations)
 
         tft_artifact = None
         tft_available = TemporalFusionTransformer is not None and torch is not None
@@ -1657,7 +1851,6 @@ class KitchenForecastSystem:
                     "rmse": next(result.rmse for result in candidate_results if result.model_name == active_model),
                     "mae": next(result.mae for result in candidate_results if result.model_name == active_model),
                     "waste_reduction_pct": 0.0,
-                    "annual_savings_inr": 0.0,
                 }
             ]
         )
@@ -1674,7 +1867,6 @@ class KitchenForecastSystem:
             evaluation_frame,
         )
         monitoring_history.loc[monitoring_history.index[-1], "waste_reduction_pct"] = summary["business_metrics"]["waste_reduction_pct"]
-        monitoring_history.loc[monitoring_history.index[-1], "annual_savings_inr"] = summary["business_metrics"]["annual_savings_inr"]
 
         save_training_artifacts(summary, comparison_frame, evaluation_frame, monitoring_history)
         self.repository.insert_training_runs(comparison_frame)
@@ -2000,10 +2192,10 @@ class KitchenForecastSystem:
         heuristic_next_day = self.optimizer.evaluate_quantity(
             float(next_day_forecast.predicted_demand),
             float(next_day_forecast.sigma),
-            self._heuristic_quantity(float(next_day_forecast.predicted_demand)),
+            self._fixed_buffer_quantity(float(next_day_forecast.predicted_demand)),
         )
         decision_comparison = {
-            "baseline": self._decision_strategy_payload("heuristic_buffer", heuristic_next_day),
+            "baseline": self._decision_strategy_payload("fixed_buffer_heuristic", heuristic_next_day),
             "optimized": self._decision_strategy_payload("uncertainty_aware_optimizer", optimized_next_day),
             "expected_cost_savings": float(
                 heuristic_next_day.expected_cost_inr - optimized_next_day.expected_cost_inr

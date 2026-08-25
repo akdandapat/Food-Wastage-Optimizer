@@ -179,7 +179,7 @@ def log_training_run_to_mlflow(
     * **Parameters** — selected model name, model version, promotion
       reason, and key ``ForecastConfig`` scalars.
     * **Metrics** — per-candidate RMSE, MAE, interval coverage, and
-      aggregate business metrics (waste reduction %, annual savings).
+      aggregate business metrics (waste reduction %, daily cost savings).
     * **Artifacts** — the serialised production model bundle (joblib).
 
     All MLflow operations are wrapped in a top-level try/except so that
@@ -254,9 +254,6 @@ def log_training_run_to_mlflow(
                     ),
                     "daily_cost_savings_inr": float(
                         biz.get("daily_cost_savings_inr", 0.0)
-                    ),
-                    "annual_savings_inr": float(
-                        biz.get("annual_savings_inr", 0.0)
                     ),
                     "prediction_interval_coverage": float(
                         biz.get("prediction_interval_coverage", 0.0)

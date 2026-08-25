@@ -32,8 +32,8 @@ from backend.schemas import (
 
 
 app = FastAPI(
-    title="Kolkata Hostel Kitchen Forecasting API",
-    description="Spatiotemporal demand forecasting, food waste optimization, and MLOps feedback loop.",
+    title="JU Mess Forecasting API",
+    description="Demand forecasting and Newsvendor optimization for Jadavpur University hostel messes.",
     version="2.0.0",
 )
 config = ForecastConfig()

@@ -47,93 +47,30 @@ DEFAULT_MENU_TYPES = [
 
 DEFAULT_KITCHENS = [
     {
-        "kitchen_id": "JU_BH1",
-        "hostel_name": "Jadavpur Boys Hostel 1",
-        "campus_zone": "south",
+        "kitchen_id": "JU_BOYS",
+        "hostel_name": "JUSL Boys Hostel",
+        "campus_zone": "campus",
         "latitude": 22.4984,
         "longitude": 88.3702,
-        "capacity": 2100,
+        "capacity": 200,
         "default_attendance_band": "high",
     },
     {
-        "kitchen_id": "JU_GH1",
-        "hostel_name": "Jadavpur Girls Hostel",
-        "campus_zone": "south",
+        "kitchen_id": "JU_MAIN",
+        "hostel_name": "Main Campus Hostel",
+        "campus_zone": "campus",
+        "latitude": 22.4979,
+        "longitude": 88.3698,
+        "capacity": 150,
+        "default_attendance_band": "high",
+    },
+    {
+        "kitchen_id": "JU_GIRLS",
+        "hostel_name": "Girls Hostel",
+        "campus_zone": "campus",
         "latitude": 22.4972,
         "longitude": 88.3691,
-        "capacity": 1650,
-        "default_attendance_band": "medium",
-    },
-    {
-        "kitchen_id": "CU_RAJA",
-        "hostel_name": "Presidency-Raja Hostel Mess",
-        "campus_zone": "central",
-        "latitude": 22.5750,
-        "longitude": 88.3626,
-        "capacity": 1850,
-        "default_attendance_band": "high",
-    },
-    {
-        "kitchen_id": "CU_EDEN",
-        "hostel_name": "Eden Hostel Central Kitchen",
-        "campus_zone": "central",
-        "latitude": 22.5727,
-        "longitude": 88.3639,
-        "capacity": 2400,
-        "default_attendance_band": "high",
-    },
-    {
-        "kitchen_id": "IIT_KGP_H1",
-        "hostel_name": "Techno Annex Mess",
-        "campus_zone": "west",
-        "latitude": 22.3143,
-        "longitude": 87.3105,
-        "capacity": 2800,
-        "default_attendance_band": "high",
-    },
-    {
-        "kitchen_id": "IEM_MAIN",
-        "hostel_name": "IEM Main Hostel Kitchen",
-        "campus_zone": "east",
-        "latitude": 22.5778,
-        "longitude": 88.4338,
-        "capacity": 1750,
-        "default_attendance_band": "medium",
-    },
-    {
-        "kitchen_id": "SXC_NORTH",
-        "hostel_name": "St Xavier's North Mess",
-        "campus_zone": "central",
-        "latitude": 22.5644,
-        "longitude": 88.3630,
-        "capacity": 1350,
-        "default_attendance_band": "medium",
-    },
-    {
-        "kitchen_id": "BESC_MAIN",
-        "hostel_name": "BESC Main Hostel Kitchen",
-        "campus_zone": "south",
-        "latitude": 22.5280,
-        "longitude": 88.3678,
-        "capacity": 1550,
-        "default_attendance_band": "medium",
-    },
-    {
-        "kitchen_id": "NIT_DGP_A",
-        "hostel_name": "NIT Durgapur Hall A Mess",
-        "campus_zone": "northwest",
-        "latitude": 23.5460,
-        "longitude": 87.2936,
-        "capacity": 2300,
-        "default_attendance_band": "high",
-    },
-    {
-        "kitchen_id": "IIEST_SHIB",
-        "hostel_name": "IIEST Shibpur Main Kitchen",
-        "campus_zone": "west",
-        "latitude": 22.5550,
-        "longitude": 88.3070,
-        "capacity": 2050,
+        "capacity": 50,
         "default_attendance_band": "high",
     },
 ]
@@ -177,11 +114,11 @@ DEFAULT_RECIPES = {
     ],
 }
 
-
 @dataclass(frozen=True)
 class ForecastConfig:
     random_state: int = 42
-    synthetic_period_days: int = 730
+    synthetic_period_days: int = 365
+    data_source_mode: str = "simulator"  # "simulator" or "ingested"
     holdout_days: int = 60
     min_training_rows: int = 120
     max_prediction_length: int = 7
@@ -191,7 +128,7 @@ class ForecastConfig:
     waste_cost: float = 35.0
     shortage_cost: float = 55.0
     retrain_interval_hours: int = 24
-    minimum_sigma: float = 28.0
+    minimum_sigma: float = 3.0
     promotion_improvement_pct: float = 1.0
     rmse_tie_threshold_pct: float = 2.0
     dashboard_history_days: int = 90

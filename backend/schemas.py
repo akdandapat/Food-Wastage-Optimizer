@@ -119,6 +119,8 @@ class ModelMetricResponse(ApiSchema):
     interval_coverage: float
     residual_std: float
     mean_prediction_jump: float
+    wape: float = 0.0
+    mase: float = 0.0
     selected_model: bool
     promoted: bool
     improvement_pct: float
