@@ -137,11 +137,9 @@ SCHEMA_STATEMENTS = [
 
 
 def capacity_band_for_value(capacity: int) -> str:
-    if capacity >= 2400:
-        return "xl"
-    if capacity >= 2000:
+    if capacity >= 180:
         return "large"
-    if capacity >= 1600:
+    if capacity >= 120:
         return "medium"
     return "compact"
 
@@ -289,6 +287,29 @@ class SQLiteRepository:
                 "SELECT COUNT(*) AS count FROM daily_observations"
             ).fetchone()
             return int(row["count"])
+
+    def list_kitchen_ids(self) -> set[str]:
+        """Return the distinct kitchen_id values present in daily_observations."""
+        with get_connection() as connection:
+            rows = connection.execute(
+                "SELECT DISTINCT kitchen_id FROM daily_observations"
+            ).fetchall()
+            return {row["kitchen_id"] for row in rows}
+
+    def observation_date_span(self) -> tuple[str, str] | None:
+        """Return (min_date, max_date) strings from daily_observations, or None if empty."""
+        with get_connection() as connection:
+            row = connection.execute(
+                "SELECT MIN(date) AS min_date, MAX(date) AS max_date FROM daily_observations"
+            ).fetchone()
+            if row is None or row["min_date"] is None:
+                return None
+            return (row["min_date"], row["max_date"])
+
+    def truncate_observations(self) -> None:
+        """Delete all rows from daily_observations, preserving other tables."""
+        with get_connection() as connection:
+            connection.execute("DELETE FROM daily_observations")
 
     def upsert_observations(self, frame: pd.DataFrame) -> None:
         if frame.empty:

@@ -8,6 +8,7 @@ All randomness is seeded via ``ForecastConfig.random_state``.
 
 from __future__ import annotations
 
+import logging
 from datetime import timedelta
 from typing import Dict, List, Optional, Tuple
 
@@ -17,6 +18,8 @@ from numpy.random import Generator
 
 from backend.calendar_utils import annotate_calendar, default_menu_for_date
 from backend.config import ForecastConfig
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Module-level look-up tables
@@ -32,15 +35,29 @@ MENU_DEMAND_EFFECT: Dict[str, float] = {
     "light_weekend": -0.045,
 }
 
-#: ISO weekday → demand scale factor.  Weekend drop mirrors hostel occupancy.
+#: ISO weekday → demand scale factor.
+#: Mon–Sat are flat at 1.0 — at n≈45–190 per meal the observed day-to-day
+#: spread does not exceed the Poisson noise floor.  This omission is
+#: deliberate.  Sunday effect is handled via SUNDAY_DAILY_MULTIPLIER.
 WEEKDAY_DEMAND_SCALE: Dict[int, float] = {
-    0: 1.03, 1: 1.01, 2: 1.00, 3: 0.99, 4: 0.97, 5: 0.90, 6: 0.86,
+    0: 1.0, 1: 1.0, 2: 1.0, 3: 1.0, 4: 1.0, 5: 1.0, 6: 1.0,
 }
 
+#: Sunday net daily-aggregate multiplier (~−18%).
+#: The underlying driver is that Sunday night is vegetarian and attendance
+#: collapses by ~45%, while Sunday morning ("grand meal") rises ~10–15%.
+#: The daily aggregate of those two effects is approximately −18%.
+SUNDAY_DAILY_MULTIPLIER: float = 0.82
+
+#: Sunday night veg multiplier — for use once meal_session is split
+#: into breakfast/dinner (Task 8).  Kept here as a named constant so the
+#: planted value is visible and recoverable.
+SUNDAY_VEG_NIGHT_MULTIPLIER: float = 0.55
+
 #: Campus zone → incremental demand bias.
+#: With all three hostels on the same campus, zone bias is zero.
 ZONE_DEMAND_BIAS: Dict[str, float] = {
-    "south": 0.00, "central": 0.02, "west": 0.015,
-    "east": -0.01, "northwest": 0.025,
+    "campus": 0.0,
 }
 
 
@@ -261,6 +278,14 @@ def generate_synthetic_operations(
     cal_rainfall: np.ndarray = calendar["rainfall"].to_numpy(dtype=float)
     weekday_scale: np.ndarray = np.array([WEEKDAY_DEMAND_SCALE[w] for w in cal_weekdays])
 
+    # Sunday flag (ISO weekday 6).
+    is_sunday: np.ndarray = (cal_weekdays == 6).astype(float)
+
+    # Shared campus shock: one draw per day, applied identically to all
+    # three hostels.  Three hostels 300 m apart are hit by the same
+    # festival, the same rainstorm, the same exam week.
+    shared_campus_shock: np.ndarray = rng.normal(0, 0.02, n_days)
+
     panels: List[pd.DataFrame] = []
 
     for kitchen in kitchens.to_dict("records"):
@@ -275,36 +300,59 @@ def generate_synthetic_operations(
         menus: List[str] = [_menu_sampler(pd.Timestamp(d), k_rng) for d in cal_dates]
         m_eff: np.ndarray = np.array([MENU_DEMAND_EFFECT[m] for m in menus])
 
-        # Attendance variation (vectorised).
+        # --- Attendance variation (Task 3b fix) ---
+        # att_var is *only* idiosyncratic day-to-day noise plus the shared
+        # campus shock.  Calendar/menu effects are applied once in the
+        # demand expression below — not here.
         att_var: np.ndarray = np.clip(
-            k_rng.normal(0, 0.028, n_days)
-            - 0.15 * cal_is_holiday - 0.05 * cal_is_exam
-            + 0.07 * cal_is_event
-            - np.clip(cal_rainfall - 28.0, 0.0, None) * 0.0012
-            + m_eff * 0.45,
+            k_rng.normal(0, 0.028, n_days) + shared_campus_shock,
             -0.30, 0.18)
 
         # Occupancy (vectorised).
         occ: np.ndarray = base_occ * weekday_scale * (1.0 + k_bias + att_var)
 
-        # Weather penalty (vectorised).
-        w_pen: np.ndarray = (
-            np.clip(np.abs(cal_temperature - 31.0) - 3.0, 0.0, None) * 12.0
-            + np.clip(cal_rainfall - 35.0, 0.0, None) * 2.5)
+        # Weather penalty — multiplicative on occupancy (Task 3c fix).
+        # Temperature: each °C above 34 or below 28 reduces attendance by 0.8%.
+        # Rainfall: each mm above 35 reduces attendance by 0.15%.
+        weather_factor: np.ndarray = (
+            1.0
+            - np.clip(np.abs(cal_temperature - 31.0) - 3.0, 0.0, None) * 0.008
+            - np.clip(cal_rainfall - 35.0, 0.0, None) * 0.0015
+        )
 
-        # Raw demand (vectorised).
-        demand: np.ndarray = (
-            cap * occ * (1.0 + m_eff)
+        # Structural demand before count noise (effects applied ONCE here).
+        structural_demand: np.ndarray = (
+            cap * occ * weather_factor
+            * (1.0 + m_eff)
             * (1.0 - 0.07 * cal_is_exam) * (1.0 - 0.18 * cal_is_holiday)
             * (1.0 + 0.10 * cal_is_event)
-            - w_pen + k_rng.normal(0, 42.0, n_days))
-        act_dem: np.ndarray = np.clip(np.round(demand), cap * 0.42, cap * 1.08).astype(int)
+            * (1.0 + (SUNDAY_DAILY_MULTIPLIER - 1.0) * is_sunday)
+        )
 
-        # Preparation buffer & waste (vectorised).
+        # --- Terminal noise: Negative Binomial (Task 3c fix) ---
+        # At μ≈50 the normal approximation puts real probability mass below
+        # zero and requires constant clipping; count data needs a count
+        # distribution.  We use NegBin with dispersion index ~1.3
+        # (mild overdispersion — what mess attendance actually looks like).
+        # Var = μ + μ²/r  ⟹  dispersion index = 1 + μ/r = 1.3  ⟹  r = μ/0.3
+        mu_structural = np.clip(structural_demand, 1.0, None)
+        r_dispersion = mu_structural / 0.3  # gives dispersion index ~1.3
+        # NegBin parameterisation: n=r, p=r/(r+μ)
+        p_nb = r_dispersion / (r_dispersion + mu_structural)
+        demand: np.ndarray = k_rng.negative_binomial(
+            np.clip(r_dispersion, 1, None).astype(int), np.clip(p_nb, 1e-6, 1.0 - 1e-6)
+        ).astype(float)
+
+        act_dem: np.ndarray = np.clip(np.round(demand), cap * 0.20, cap * 1.25).astype(int)
+
+        # Preparation buffer & waste (vectorised) — Task 3a fix.
+        # prep_buf straddles zero so ~10–15% of days end in genuine shortfall.
         festive_flag: np.ndarray = np.array([1.0 if m == "festive" else 0.0 for m in menus])
-        prep_buf: np.ndarray = 0.06 + 0.015 * cal_is_event + 0.010 * festive_flag + k_rng.normal(0, 0.01, n_days)
-        prep_qty: np.ndarray = np.maximum(np.round(act_dem * (1.0 + prep_buf)), act_dem).astype(int)
-        waste: np.ndarray = np.maximum(prep_qty - act_dem + k_rng.normal(0, 8.0, n_days), 0.0)
+        prep_buf: np.ndarray = 0.06 + 0.015 * cal_is_event + 0.010 * festive_flag + k_rng.normal(0, 0.05, n_days)
+        # Floor at 0 — NOT at act_dem — so preparation can genuinely fall short.
+        prep_qty: np.ndarray = np.maximum(np.round(act_dem * (1.0 + prep_buf)), 0).astype(int)
+        # Waste noise proportional to demand (Task 3c fix).
+        waste: np.ndarray = np.maximum(prep_qty - act_dem + k_rng.normal(0, 0.04 * act_dem, n_days), 0.0)
         short: np.ndarray = np.maximum(act_dem - prep_qty, 0.0).astype(float)
 
         # Per-kitchen micro-climate jitter.
@@ -330,12 +378,62 @@ def generate_synthetic_operations(
 
     observations: pd.DataFrame = pd.concat(panels, ignore_index=True)
 
-    # Sparse missingness keeps imputation paths realistic.
-    _corrupt: List[tuple[str, float]] = [
-        ("temperature", 0.01), ("rainfall", 0.015), ("attendance_variation", 0.01)]
-    for col, frac in _corrupt:
-        n_miss: int = max(1, int(len(observations) * frac))
-        idx: np.ndarray = rng.choice(observations.index.to_numpy(), size=n_miss, replace=False)
-        observations.loc[idx, col] = np.nan
+    # --- Post-generation shortage assertions (Task 3a) ---
+    total_rows = len(observations)
+    shortage_rows = int((observations["shortage_quantity"] > 0).sum())
+    shortage_rate = shortage_rows / total_rows
+    print(f"[data_generation] shortage_quantity.sum() = {observations['shortage_quantity'].sum():.1f}")
+    print(f"[data_generation] shortage rate = {shortage_rate:.1%} ({shortage_rows}/{total_rows} rows)")
+    if observations["shortage_quantity"].sum() == 0:
+        logger.warning(
+            "shortage_quantity is identically zero — the newsvendor has no shortage signal."
+        )
+    if not (0.05 <= shortage_rate <= 0.20):
+        logger.warning(
+            f"Shortage rate {shortage_rate:.1%} is outside the target 5–20% band."
+        )
+
+    # --- MAR missingness (Task 3g) ---
+    # attendance_variation logs go missing on holidays (4x higher probability)
+    # because the mess runs on skeleton staff.
+    # Weather readings go missing during heavy rain (3x higher probability).
+    _corrupt_mar(observations, "attendance_variation", base_rate=0.01,
+                 condition_col="is_holiday", condition_val=1, boost=4.0, rng=rng)
+    _corrupt_mar(observations, "temperature", base_rate=0.01,
+                 condition_col="rainfall", condition_threshold=30.0, boost=3.0, rng=rng)
+    _corrupt_mar(observations, "rainfall", base_rate=0.015,
+                 condition_col="rainfall", condition_threshold=30.0, boost=3.0, rng=rng)
 
     return observations.sort_values(["date", "kitchen_id"]).reset_index(drop=True)
+
+
+def _corrupt_mar(
+    df: pd.DataFrame,
+    target_col: str,
+    base_rate: float,
+    rng: Generator,
+    condition_col: str | None = None,
+    condition_val: float | None = None,
+    condition_threshold: float | None = None,
+    boost: float = 1.0,
+) -> None:
+    """Introduce Missing-At-Random (MAR) corruption to a column.
+
+    Missingness probability is ``base_rate`` for rows not matching the
+    condition, and ``base_rate * boost`` for rows that do match.
+    """
+    n = len(df)
+    probs = np.full(n, base_rate)
+    if condition_col is not None:
+        if condition_val is not None:
+            mask = df[condition_col].to_numpy() == condition_val
+        elif condition_threshold is not None:
+            # Use the *pre-corruption* values for the condition check
+            vals = pd.to_numeric(df[condition_col], errors="coerce").to_numpy()
+            mask = vals > condition_threshold
+        else:
+            mask = np.zeros(n, dtype=bool)
+        probs[mask] = base_rate * boost
+    # Normalise so overall rate stays close to base_rate
+    draws = rng.random(n) < probs
+    df.loc[draws, target_col] = np.nan

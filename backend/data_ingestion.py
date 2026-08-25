@@ -372,7 +372,7 @@ def build_processed_operations(
     merged = weather.merge(demand_base, on="date", how="inner")
     if merged.empty:
         merged = weather.copy()
-        scale = demand_base["demand_units"].mean() if not demand_base.empty else 2000.0
+        scale = demand_base["demand_units"].mean() if not demand_base.empty else 150.0
         merged["demand_units"] = float(scale)
 
     merged = annotate_calendar(merged)
@@ -399,14 +399,11 @@ def build_processed_operations(
         for row in merged.itertuples(index=False):
             base_demand = float(getattr(row, "demand_units", ref_demand))
             demand = base_demand * scale_to_meals * kitchen_scale * (1.0 + krng.normal(0, 0.02))
-            demand = int(np.clip(round(demand), cap * 0.42, cap * 1.08))
-            prep_buffer = 0.06 + krng.normal(0, 0.008)
-            prepared = int(max(round(demand * (1 + prep_buffer)), demand))
-            waste_qty = max(
-                prepared - demand + krng.normal(0, 5.0),
-                waste_rate * prepared * 0.3 + krng.normal(0, 3.0),
-            )
-            waste_qty = float(max(round(waste_qty, 2), 0.0))
+            demand = int(np.clip(round(demand), cap * 0.20, cap * 1.25))
+            prep_buffer = 0.06 + krng.normal(0, 0.05)
+            prepared = int(max(round(demand * (1 + prep_buffer)), 0))
+            waste_qty = float(max(prepared - demand + krng.normal(0, 0.04 * max(demand, 1.0)), 0.0))
+            waste_qty = float(round(waste_qty, 2))
             shortage = float(max(demand - prepared, 0.0))
             records.append(
                 {
