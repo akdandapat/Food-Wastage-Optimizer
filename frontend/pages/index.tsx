@@ -61,7 +61,6 @@ type MetricsResponse = {
   business_metrics: {
     waste_reduction_pct?: number;
     daily_cost_savings_inr?: number;
-    annual_savings_inr?: number;
     optimized_waste_pct?: number;
     prediction_interval_coverage?: number;
     before_after_table?: MetricComparisonRow[];
@@ -79,7 +78,6 @@ type MetricsResponse = {
     rmse: number;
     mae: number;
     waste_reduction_pct: number;
-    annual_savings_inr: number;
   }[];
   plot_urls: Record<string, string>;
 };
@@ -564,18 +562,6 @@ export default function HomePage() {
             tone="earth"
           />
           <KpiCard
-            label="Annual Savings"
-            value={
-              metrics
-                ? formatCurrency(metrics.business_metrics.annual_savings_inr)
-                : loading
-                  ? "..."
-                  : "n/a"
-            }
-            caption="Projected annual savings from optimized cooking."
-            tone="warm"
-          />
-          <KpiCard
             label="Coverage"
             value={
               metrics ? formatPercent(metrics.coverage_metrics.actual_coverage_pct) : loading ? "..." : "n/a"
@@ -905,14 +891,14 @@ export default function HomePage() {
 
       <SectionCard
         title="Pre vs Post Impact"
-        subtitle="Structured before-vs-after comparison between heuristic planning and the optimized decision layer."
+        subtitle="Structured before-vs-after comparison between seasonal-naive baseline and the optimized decision layer."
       >
         <div className="table-wrap">
           <table className="data-table">
             <thead>
               <tr>
                 <th>Metric</th>
-                <th>Before (Heuristic)</th>
+                <th>Before (Seasonal Naive)</th>
                 <th>After (Optimized)</th>
                 <th>Unit</th>
               </tr>
@@ -979,7 +965,7 @@ export default function HomePage() {
 
       <SectionCard
         title="Demand and Waste"
-        subtitle="Recent total demand, predicted demand, and waste delta across the kitchen network."
+        subtitle="Recent total demand, predicted demand, and waste delta across all hostels."
       >
         <div className="chart-shell">
           <ResponsiveContainer width="100%" height="100%">

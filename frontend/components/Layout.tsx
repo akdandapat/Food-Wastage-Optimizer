@@ -9,20 +9,20 @@ export default function Layout({ children }: LayoutProps) {
   return (
     <>
       <Head>
-        <title>Kitchen Demand Command Center</title>
+        <title>JU Mess Demand Dashboard</title>
         <meta
           name="description"
-          content="Kitchen-level demand forecasting, optimization, and MLOps dashboard for Kolkata hostel mess operations."
+          content="Demand forecasting, optimization, and MLOps dashboard for Jadavpur University hostel messes."
         />
       </Head>
       <div className="page-shell">
         <header className="hero-panel">
           <div>
-            <p className="eyebrow">Spatiotemporal Demand Forecasting</p>
-            <h1>Kolkata Hostel Kitchen Command Center</h1>
+            <p className="eyebrow">JU Hostel Mess Forecasting</p>
+            <h1>JU Mess Demand Dashboard</h1>
             <p className="hero-copy">
-              A multi-kitchen forecasting, optimization, and feedback system
-              for university hostel mess operations across Kolkata.
+              Demand forecasting, Newsvendor optimization, and feedback loop
+              for 3 Jadavpur University hostel messes.
             </p>
           </div>
           <div className="hero-stat-block">
